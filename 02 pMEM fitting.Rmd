@@ -1,0 +1,231 @@
+---
+title: "pMEM fitting"
+author: "Dominik Klepl"
+date: "6/9/2020"
+output: html_document
+---
+
+Libraries
+```{r}
+library(tictoc) #measuring runtime
+library(tidyverse)
+library(ggplot2)
+library(ggthemes)
+library(gtools)
+```
+
+
+Read testing data
+```{r}
+#data = read.table("testdata.dat")
+#data = data[,sample(1:ncol(data),1000),]
+
+data = read.delim("data/AD EC/R42-16 LONG EPOCH EC 6.txt", header=T)[,sample(2:24,10)]
+data = t(data)
+```
+
+Threshold the data
+```{r}
+#binarize 
+binarized = apply(data, 1, function(x) ifelse(x >= mean(x), 1, -1)) %>% t()
+```
+
+Check number of unique states
+```{r}
+#how many combinations are possible?
+2^nrow(binarized) 
+
+#unite to form binary states
+
+unique = t(binarized) %>%
+  as.data.frame() %>%
+  unite("state", sep = "") %>%
+  group_by(state) %>%
+  summarise(count = n())
+
+ggplot(unique, aes(count))+
+  geom_histogram(binwidth = 10)+
+  theme_few()+
+  labs(x ="Occurences of state")
+
+pastecs::stat.desc(unique$count)
+```
+
+## Fit pMEM with pseudo-likelihood
+
+Estimator function
+```{r}
+#calculate empirical mean and correlation
+pMEM_PL = function(data, lr_rate = 0.2, iter_max = 5e6, stopping = 1e-8) {
+  len = ncol(data)
+  N = nrow(data)
+  mean_emp = rowMeans(data)
+  cor_emp = (data%*%t(data))/len
+
+  h = matrix(0, nrow = N, ncol = 1)
+  J = matrix(0, nrow = N, ncol = N)
+  ones = matrix(1, nrow = 1, ncol = len)
+
+  for (i in 1:iter_max) {
+    likelihood_h = -mean_emp + rowMeans(tanh(J%*%data + h%*%ones))
+    h = h - lr_rate*likelihood_h
+    
+    likelihood_J = -cor_emp + 0.5*data %*% t((tanh(J%*%data + h%*%ones)))/len+0.5*t((data%*%t((tanh(J%*%data + h%*%ones)))))/len
+    likelihood_J = likelihood_J - diag(diag(likelihood_J))
+    J = J - lr_rate*likelihood_J
+    
+    if (sqrt(norm(likelihood_J, type = "F")^2 + norm(likelihood_h, type="2")^2)/N/(N+1) < stopping) {break
+    }
+  }
+  return(list(h=h,J=J))
+}
+```
+
+Run function
+```{r}
+tic("Fitting")
+param = pMEM_PL(binarized)
+toc()
+
+library(corrplot)
+plot(param$h)
+corrplot(param$J, method = "color", order = "hclust")
+corrplot(cor(t(data)), method="color",order = "hclust")
+```
+
+
+## Get list of all states - 2^N
+Function
+```{r}
+get_states = function(N, type = c("1","0")) {
+  if (type == "1") {return(t(gtools::permutations(2,N,c(1,-1), repeats.allowed = T)))}
+  if (type == "0") {return(t(gtools::permutations(2,N,c(1,0), repeats.allowed = T)))}
+}
+```
+
+
+## Compute probability of states
+
+Function
+```{r}
+get_probability = function(parameter_list) {
+  h = parameter_list$h
+  J = parameter_list$J
+  
+  N_ROI = nrow(h)
+  states = get_states(N_ROI, type = "1")
+  states_len = ncol(states)
+  
+  Z1 = -diag(t(0.5*J%*%states) %*% states)
+  Z2 = rowSums(t((h %*% matrix(1,1,states_len)) * states))
+  
+  Z = sum(exp(-(Z1-Z2)))
+  return(exp(-(Z1-Z2))/Z)
+}
+```
+
+Compute
+```{r}
+probs = get_probability(param)
+```
+
+Compare empirical and predicted probabilities
+```{r}
+states_emp = unique$state
+states = get_states(nrow(data),"1") %>% t() %>% as.data.frame() %>% unite("state", sep = "") 
+probs_df = data.frame(predicted=probs,state=states$state)
+probs_df = probs_df[order(probs_df$state),]
+
+add_states = data.frame(state=states[which(!(states$state %in% states_emp)),])
+add_states$count = rep(0,nrow(add_states))
+
+unique_new = rbind(unique,add_states)
+unique_new = unique_new[order(unique_new$state),]
+
+probs_emp = unique_new$count/sum(unique_new$count)
+
+#MSE
+mean((probs_emp - probs)^2)
+
+data.frame(empirical = probs_emp, predicted = probs_df$predicted) %>%
+  ggplot(aes(predicted, empirical))+
+  geom_point()+
+  theme_few()
+```
+
+## Compute Energy
+```{r}
+get_energy = function(parameter_list) {
+  h = parameter_list$h
+  J = parameter_list$J
+  
+  N_ROI = nrow(h)
+  states = get_states(N_ROI, type = "1")
+  states_len = ncol(states)
+  
+  Z1 = -diag(t(0.5*J%*%states) %*% states)
+  Z2 = rowSums(t((h %*% matrix(1,1,states_len)) * states))
+
+  return((Z1-Z2))
+}
+```
+
+Test
+Sanity check - higher probability means lower energy.
+```{r}
+data.frame(Probability = get_probability(param),Energy = get_energy(param)) %>%
+  ggplot(aes(Probability, Energy))+
+  geom_point()+
+  theme_few()
+```
+
+## Accuracy of pMEM
+```{r}
+data = binarized
+
+len = ncol(data)
+N = nrow(data)
+
+#get all states
+states = get_states(N, "1")
+N_states = ncol(states)
+
+#Compute empirical probability and its entropy
+prob_emp = as.matrix(probs_emp)
+prob_emp = prob_emp+1e-100
+
+Ent_emp = sum(-prob_emp * log2(prob_emp))
+
+#Compute first-order model entropy (only h)
+active = rowMeans(binarized==1)
+inactive = 1-active
+
+active_mat = matrix(active, N, N_states)
+inactive_mat = matrix(inactive, N, N_states)
+
+prob_1 = ((states+1)/2) * active_mat + ((1-states)/2) * inactive_mat
+prob_1 = as.matrix(Rfast::colprods(prob_1))
+
+Ent_1 = sum(-prob_1 * log2(prob_1))
+
+#Compute entropy of fitted pMEM
+pMEM_prob = get_probability(param)
+Ent_2 = sum(-pMEM_prob * log2(pMEM_prob))
+
+#Accuracy index - r
+r = (Ent_1-Ent_2)/(Ent_1-Ent_emp)
+
+
+#Accuracy with KL divergence
+D1_mat = prob_emp * log2(prob_emp/prob_1)
+D1 = sum(D1_mat)
+
+D2_mat = prob_emp * log2(prob_emp/pMEM_prob)
+D2 = sum(D2_mat)
+
+rD = (D1-D2)/D1
+
+cat("r =",r,
+    "\nr_KLD =",rD)
+```
+
