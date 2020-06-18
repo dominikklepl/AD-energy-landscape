@@ -1,0 +1,57 @@
+---
+title: "Energy landscape analysis"
+author: "Dominik Klepl"
+date: "6/18/2020"
+output: html_document
+---
+
+```{r}
+source("scripts/ELA.R")
+```
+
+
+
+Load one pMEM result
+```{r}
+load("data/pMEM/R38-16_HC_EC.RData")
+```
+
+Compute energy of all states. Get vector of all states. Merge them in a dataframe. I'll be using binary notation of states (1/0) instead of 1/-1 for better readability.
+```{r}
+states_energy = get_state_energy(results$parameters)
+```
+
+## Energy landscape network
+
+Construct adjacency matrix - states are connected if hamming distance = 1.
+```{r}
+adj = get_adjacency(states_energy$state)
+```
+
+
+### Find local minima
+```{r}
+m = find_minima(adj, states_energy)
+```
+
+Run for all
+```{r}
+files = list.files("data/pMEM", full.names = T)
+
+n = rep(NA,length(files))
+diag = rep(NA,length(files))
+cond = rep(NA,length(files))
+for (i in 1:length(files)){
+  load(files[i])
+  states_energy = get_state_energy(results$parameters)
+  adj = get_adjacency(states_energy$state)
+  m = find_minima(adj, states_energy)
+  n[i] = nrow(m)
+  diag[i] = strsplit(files[i],"_")[[1]][2]
+  cond[i] = strsplit(strsplit(files[i],"_")[[1]][3],"\\.")[[1]][1]
+}
+
+data.frame(n, diag,cond) %>% group_by(diag,cond) %>% summarise(avg = mean(n))
+data.frame(n, diag,cond) %>% group_by(cond) %>% summarise(avg = mean(n))
+```
+
