@@ -1,6 +1,8 @@
 library(tidyverse)
 library(tidygraph)
 library(ggraph)
+library(ggdendro)
+library(ggplot2)
 
 get_energy = function(parameter_list) {
   h = parameter_list$h
@@ -121,4 +123,112 @@ plot_basin = function(basin_df) {
     guides(color=guide_legend(title = "Local minimum"))+
     theme_few()
   return(plot)
+}
+
+find_energy_barrier = function(minima_df,states_energy_df, adj_matrix) {
+  #vector with local minima
+  min_list = minima_df$state
+  
+  #get all pairs of minima
+  pairs = gtools::permutations(length(min_list), 2, min_list, repeats.allowed = T)
+  barier_df = as.data.frame(pairs)
+  barier_df$saddle = NA
+  barier_df$barrier = NA
+  
+  #find shortest path between the pairs
+  #selected 1
+  for (i in 1:nrow(pairs)){
+    states_df = states_energy_df
+    A = adj_matrix
+    pick = pairs[i,]
+    network = igraph::graph_from_adjacency_matrix(A, "undirected")
+    path = igraph::shortest_paths(network, from = pick[1], to = pick[2])$vpath[[1]]$name
+    #find highest energy on the path
+    maxE = max(states_df$energy[states_df$state %in% path])
+    if (pick[1]==pick[2]){
+      barier_df$saddle[i] = 0
+      barier_df$barrier[i] = 0
+    }
+    else{
+      while(length(path)!=0){
+        maxE_last = maxE
+        max_state = states_df$state[states_df$energy==maxE]
+        states_df = states_df[states_df$energy<maxE,]
+        A = get_adjacency(states_df$state)
+        network = igraph::graph_from_adjacency_matrix(A, "undirected")
+        path = try(igraph::shortest_paths(network, from = pick[1], to = pick[2])$vpath[[1]]$name,silent = T)
+        maxE = try(max(states_df$energy[states_df$state %in% path]),silent = T)
+      }
+      barier_df$saddle[i] = max_state
+      barier_df$barrier[i] = maxE_last
+    }
+  }
+  colnames(barier_df)[1:2] = c("min1","min2")
+  barier_df = barier_df %>% filter(barrier!=0)
+  return(barier_df)
+}
+
+plot_disconnectivity = function(barrier_df) {
+  min_list = unique(barrier_df$min1)
+  min_n = length(min_list)
+  #bariers as matrix
+  barrier_mat = matrix(barrier_df$barrier, nrow = min_n,ncol=min_n)
+  dist = abs(barrier_mat*lower.tri(barrier_mat, diag = T))
+  dist = as.dist(dist)
+  hc = hclust(dist)
+  
+  #make custom dendogram
+  disc_graph = ggdendrogram(hc)+
+    theme_few()+
+    labs(x = NULL,
+         y = "Energy barrier")
+  
+  #create matrix showing the activation patterns
+  patterns = as.numeric(unlist(strsplit(min_list,"")))
+  activations = matrix(patterns,nrow = length(patterns)/length(min_list), ncol = length(min_list)) %>% reshape2::melt() %>% mutate(Var1 = as.factor(Var1),Var2 = as.factor(Var2),value=as.factor(value))
+  pattern_plot = ggplot(data = activations, aes(x=Var1, y=Var2, fill=value)) + 
+    geom_tile(color="white")+
+    theme_minimal()+
+    coord_fixed()+
+    labs(y = "Minima")+
+    scale_fill_manual(values=c("#F2F2F2","black"))+
+    guides(fill=F)
+  
+  library(patchwork)
+  return(disc_graph/pattern_plot)
+}
+
+simulate_transitions = function(n_iter, adjacency_mat, states_df){
+  #number of transitions
+  n_iter = n_iter+2000
+  
+  #vector for storing visited states
+  visited = rep(0,n_iter)
+  
+  #random start
+  start = sample(1:nrow(adjacency_mat),1)
+  current = colnames(adjacency_mat)[start]
+  
+  for (i in 1:n_iter){
+    #store current position
+    visited[i] = current
+    
+    E_current = states_df$energy[states_df$state==current]
+    
+    #get neighbours
+    neighbours = rownames(adjacency_mat)[adjacency_mat[,current]==1]
+    
+    #select one of the neighbours with P=1/N
+    proposal = sample(neighbours,1)
+    #get E
+    E_proposal = states_df$energy[states_df$state==proposal]
+    
+    if (E_proposal>E_current){
+      p_move = exp(E_current-E_proposal)
+      random = runif(1)
+      current = ifelse(p_move>random, proposal, current)
+    } else current = proposal
+  }
+  visited = visited[-1:-2000]
+  return(visited)
 }

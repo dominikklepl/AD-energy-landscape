@@ -2,7 +2,9 @@
 title: "Energy landscape analysis"
 author: "Dominik Klepl"
 date: "6/18/2020"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r}
@@ -56,75 +58,46 @@ ggsave("basin_plot.png",basin_plot, width = 10, height = 8)
 ```
 
 
-
 ## Estimate energy barriers between minima
-```{r}
-library(igraph)
-
-#vector with local minima
-min_list = minima$state
-
-#get all pairs of minima
-pairs = gtools::permutations(length(min_list), 2, min_list, repeats.allowed = T)
-barier_df = as.data.frame(pairs)
-barier_df$saddle = NA
-barier_df$barier = NA
-
-#find shortest path between the pairs
-#selected 1
-for (i in 1:nrow(pairs)){
-  states_df = states_energy
-  A = adj
-  pick = pairs[i,]
-  network = igraph::graph_from_adjacency_matrix(A, "undirected")
-  path = igraph::shortest_paths(network, from = pick[1], to = pick[2])$vpath[[1]]$name
-  #find highest energy on the path
-  maxE = max(states_df$energy[states_df$state %in% path])
-  if (pick[1]==pick[2]){
-    barier_df$saddle[i] = 0
-    barier_df$barier[i] = 0
-  }
-  else{
-    while(length(path)!=0){
-      maxE_last = maxE
-      max_state = states_df$state[states_df$energy==maxE]
-      states_df = states_df[states_df$energy<maxE,]
-      A = get_adjacency(states_df$state)
-      network = igraph::graph_from_adjacency_matrix(A, "undirected")
-      path = igraph::shortest_paths(network, from = pick[1], to = pick[2])$vpath[[1]]$name
-      maxE = max(states_df$energy[states_df$state %in% path])
-    }
-    barier_df$saddle[i] = max_state
-    barier_df$barier[i] = maxE_last
-  }
-}
+```{r include=F}
+barrier_df = find_energy_barrier(minima,states_energy,adj)
 ```
 
 ### Construct disconnectivity graph
 ```{r}
-library(ggdendro)
-library(ggplot2)
-#bariers as matrix
-barier_mat = matrix(barier_df$barier, nrow = length(min_list),ncol=length(min_list))
-d = abs(barier_mat*lower.tri(barier_mat, diag = T))
-d = as.dist(d)
-hc = hclust(d)
-
-#make custom dendogram
-disc_graph = ggdendrogram(hc)+
-  theme_few()+
-  labs(x = NULL,
-       y = "Energy barrier")
-disc_graph
-
-#create matrix showing the activation patterns
-patterns = as.numeric(unlist(strsplit(min_list,"")))
-activations = matrix(patterns,nrow = length(patterns)/length(min_list), ncol = length(min_list))
-corrplot::corrplot(activations, method = "square", is.corr = F, cl.pos = "n", col = colorRampPalette(c("black"))(1), addgrid.col = "black")
+plot_disconnectivity(barrier_df)
 ```
 
 ## Simulate duration in basin - Metropolis-Hastings/MCMC variant
 
+Start at random
+Get neighbours
+Select one of the N neigbours with Pr = 1/N
+Get energy of current state and proposed state
+If E(current)<E(proposed) - move with probability of exp(E(current)-E(proposed))
+Else (i.e. E(current)>E(proposed)) - move with probability of 1
+
+Simulate 10 seconds of transitions (10*2000Hz = 20000) + 2000 for warm-up
+```{r}
+x = simulate_transitions(2e4, adj, states_energy)
+
+duration = data.frame(state = x) %>%
+  left_join(basin_df$membership) %>%
+  group_by(basin) %>%
+  summarise(duration = n()) %>%
+  mutate(duration = duration/2000)
+  
+ggplot(duration, aes(basin, duration, fill=basin))+
+  geom_col()+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = NULL,
+       y = "seconds")+
+  guides(fill=guide_legend(title = "Basin of locmin"))
+
+x = sapply(x, BinToDec)
+plot(x, type = "l")
+```
 
 
 
@@ -136,22 +109,22 @@ corrplot::corrplot(activations, method = "square", is.corr = F, cl.pos = "n", co
 
 Run for all
 ```{r}
-files = list.files("data/pMEM", full.names = T)
-
-n = rep(NA,length(files))
-diag = rep(NA,length(files))
-cond = rep(NA,length(files))
-for (i in 1:length(files)){
-  load(files[i])
-  states_energy = get_state_energy(results$parameters)
-  adj = get_adjacency(states_energy$state)
-  m = find_minima(adj, states_energy)
-  n[i] = nrow(m)
-  diag[i] = strsplit(files[i],"_")[[1]][2]
-  cond[i] = strsplit(strsplit(files[i],"_")[[1]][3],"\\.")[[1]][1]
-}
-
-data.frame(n, diag,cond) %>% group_by(diag,cond) %>% summarise(avg = mean(n))
-data.frame(n, diag,cond) %>% group_by(cond) %>% summarise(avg = mean(n))
+# files = list.files("data/pMEM", full.names = T)
+# 
+# n = rep(NA,length(files))
+# diag = rep(NA,length(files))
+# cond = rep(NA,length(files))
+# for (i in 1:length(files)){
+#   load(files[i])
+#   states_energy = get_state_energy(results$parameters)
+#   adj = get_adjacency(states_energy$state)
+#   m = find_minima(adj, states_energy)
+#   n[i] = nrow(m)
+#   diag[i] = strsplit(files[i],"_")[[1]][2]
+#   cond[i] = strsplit(strsplit(files[i],"_")[[1]][3],"\\.")[[1]][1]
+# }
+# 
+# data.frame(n, diag,cond) %>% group_by(diag,cond) %>% summarise(avg = mean(n))
+# data.frame(n, diag,cond) %>% group_by(cond) %>% summarise(avg = mean(n))
 ```
 
