@@ -6,9 +6,10 @@ output: html_document
 ---
 
 ```{r}
+library(ggplot2)
+library(ggthemes)
 source("scripts/ELA.R")
 ```
-
 
 
 Load one pMEM result
@@ -29,10 +30,109 @@ adj = get_adjacency(states_energy$state)
 ```
 
 
-### Find local minima
+## Find local minima
 ```{r}
-m = find_minima(adj, states_energy)
+minima = find_minima(adj, states_energy)
 ```
+
+## Estimate basin size
+```{r}
+basin_df = basin_size_estimator(adj, states_energy)
+
+basin_df$membership %>% 
+  group_by(basin) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(basin, count, fill=basin))+
+  geom_col()+
+  theme_few()+
+  scale_fill_tableau()+
+  guides(fill=F)
+```
+
+## Visualize basins
+```{r}
+(basin_plot = plot_basin(basin_df))
+ggsave("basin_plot.png",basin_plot, width = 10, height = 8)
+```
+
+
+
+## Estimate energy barriers between minima
+```{r}
+library(igraph)
+
+#vector with local minima
+min_list = minima$state
+
+#get all pairs of minima
+pairs = gtools::permutations(length(min_list), 2, min_list, repeats.allowed = T)
+barier_df = as.data.frame(pairs)
+barier_df$saddle = NA
+barier_df$barier = NA
+
+#find shortest path between the pairs
+#selected 1
+for (i in 1:nrow(pairs)){
+  states_df = states_energy
+  A = adj
+  pick = pairs[i,]
+  network = igraph::graph_from_adjacency_matrix(A, "undirected")
+  path = igraph::shortest_paths(network, from = pick[1], to = pick[2])$vpath[[1]]$name
+  #find highest energy on the path
+  maxE = max(states_df$energy[states_df$state %in% path])
+  if (pick[1]==pick[2]){
+    barier_df$saddle[i] = 0
+    barier_df$barier[i] = 0
+  }
+  else{
+    while(length(path)!=0){
+      maxE_last = maxE
+      max_state = states_df$state[states_df$energy==maxE]
+      states_df = states_df[states_df$energy<maxE,]
+      A = get_adjacency(states_df$state)
+      network = igraph::graph_from_adjacency_matrix(A, "undirected")
+      path = igraph::shortest_paths(network, from = pick[1], to = pick[2])$vpath[[1]]$name
+      maxE = max(states_df$energy[states_df$state %in% path])
+    }
+    barier_df$saddle[i] = max_state
+    barier_df$barier[i] = maxE_last
+  }
+}
+```
+
+### Construct disconnectivity graph
+```{r}
+library(ggdendro)
+library(ggplot2)
+#bariers as matrix
+barier_mat = matrix(barier_df$barier, nrow = length(min_list),ncol=length(min_list))
+d = abs(barier_mat*lower.tri(barier_mat, diag = T))
+d = as.dist(d)
+hc = hclust(d)
+
+#make custom dendogram
+disc_graph = ggdendrogram(hc)+
+  theme_few()+
+  labs(x = NULL,
+       y = "Energy barrier")
+disc_graph
+
+#create matrix showing the activation patterns
+patterns = as.numeric(unlist(strsplit(min_list,"")))
+activations = matrix(patterns,nrow = length(patterns)/length(min_list), ncol = length(min_list))
+corrplot::corrplot(activations, method = "square", is.corr = F, cl.pos = "n", col = colorRampPalette(c("black"))(1), addgrid.col = "black")
+```
+
+## Simulate duration in basin - Metropolis-Hastings/MCMC variant
+
+
+
+
+
+
+
+
+
 
 Run for all
 ```{r}
