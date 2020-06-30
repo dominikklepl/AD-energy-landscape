@@ -56,23 +56,32 @@ pastecs::stat.desc(unique$count)
 param = pMEM_PL(binarized)
 
 #compare pMEM parameters with Pearson's correlation scores
-corrplot::corrplot(param$J, method = "color", order = "hclust")
-corrplot::corrplot(cor(t(data)), method="color",order = "hclust")
+corrplot::corrplot(param$J, method = "color")
+corrplot::corrplot(cor(t(data)), method="color")
 ```
 
 Compare empirical and predicted probabilities
 ```{r}
 probs_emp = get_empirical_prob(binarized)
 probs = get_probability(param)
+```
 
-#MSE
-mean((probs_emp - probs)^2)
 
+Using regression and $R^2$
+```{r}
+get_R2(probs_emp, probs)
+```
+
++visually
+```{r}
 data.frame(empirical = probs_emp, predicted = probs) %>%
   ggplot(aes(predicted, empirical))+
   geom_point()+
   theme_few()
 ```
+
+
+
 
 Test
 Sanity check - higher probability means lower energy.
@@ -81,6 +90,16 @@ data.frame(Probability = get_probability(param),Energy = get_energy(param)) %>%
   ggplot(aes(Probability, Energy))+
   geom_point()+
   theme_few()
+```
+
+
+
+```{r}
+channels = 15:24
+load(file)
+data = t(data)
+data = data[channels,]
+results = run_pMEM(data)
 ```
 
 

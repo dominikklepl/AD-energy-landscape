@@ -14,7 +14,7 @@ source("scripts/preprocess.R")
 
 ## Load data and extract info from filename 
 ```{r}
-files = list.files("data", full.names = T, recursive = T)
+files = list.files("data/raw", full.names = T, recursive = T)
 d = load_data(files[2])
 attr(d,"info")
 ```
@@ -138,16 +138,32 @@ for (i in 1:length(files)){
 }
 ```
 
-## Final pipeline
+# Final pipeline
+
+## Plot selected channels
+```{r}
+selected_channels = c("P3_O1", "T6_O2", "P4_PZ", "T3_T5", "T3_C3", "F3_FZ", "F4_C4")
+
+selected_df = locs
+selected_df$label = row.names(selected_df)
+selected_df = selected_df[selected_df$label %in% selected_channels,]
+
+(channels_plot = geom_head()+
+  geom_point(data=selected_df, aes(x,y),size=16, color="navy")+
+  geom_text(data=selected_df, aes(x,y, label=label), color="white"))
+
+ggsave("figures/overview_montage.png", channels_plot)
+```
+
+
 ```{r}
 files = list.files("data/raw", full.names = T, recursive = T)
 
 for (i in 1:length(files)){
   data = preprocess(files[i])
-
+  data = data[,selected_channels]
   new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
   save_to = paste0("data/clean/",new_name,".RData")
-  
   save(data,file=save_to)
 }
 ```

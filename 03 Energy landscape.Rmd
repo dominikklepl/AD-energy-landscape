@@ -54,7 +54,7 @@ basin_df$membership %>%
 ## Visualize basins
 ```{r}
 (basin_plot = plot_basin(basin_df))
-ggsave("basin_plot.png",basin_plot, width = 10, height = 8)
+ggsave("figures/basin_plot.png",basin_plot, width = 10, height = 8)
 ```
 
 
@@ -65,10 +65,75 @@ barrier_df = find_energy_barrier(minima,states_energy,adj)
 
 ### Construct disconnectivity graph
 ```{r}
-plot_disconnectivity(barrier_df)
+p_disc = plot_disconnectivity(barrier_df)
+p_disc
+
+ggsave("figures/disconnectivity.png", p_disc)
 ```
 
-## Simulate duration in basin - Metropolis-Hastings/MCMC variant
+## Construct network of local minima and transfer states
+```{r}
+united = barrier_df %>% unite("pair", min1:min2)
+mins = unique(barrier_df$min1)
+find = gtools::combinations(length(mins), 2, mins) %>% as.data.frame() %>% unite("pair", 1:2)
+idx = united$pair %in% find$pair
+
+LMTS_construct = barrier_df[idx,]
+LMTS = matrix(NA, 0, 5)
+saddles = unique(LMTS_construct$saddle) %>% sapply(BinToDec)
+
+for (i in 1:nrow(LMTS_construct)){
+  row = LMTS_construct[i,]
+  barrier = row$barrier
+  
+  #get reduced network
+  states_reduced = states_energy[states_energy$energy<=barrier,]
+  A_reduced = get_adjacency(states_reduced$state)
+  network_reduced = igraph::graph_from_adjacency_matrix(A_reduced, "undirected")
+  transfer = igraph::shortest_paths(network_reduced, from = row$min1, to = row$min2) $vpath[[1]]$name
+  
+  sub = igraph::induced_subgraph(network_reduced, transfer)
+  edgelist = igraph::as_edgelist(sub)
+  edgelist = cbind(edgelist,
+                   rep(row$min1, nrow(edgelist)), 
+                   rep(row$min2, nrow(edgelist)),
+                   rep(barrier, nrow(edgelist)))
+  
+  LMTS = rbind(LMTS, edgelist)
+}
+
+LMTS[,1] = sapply(LMTS[,1], BinToDec)
+LMTS[,2] = sapply(LMTS[,2], BinToDec)
+LMTS[,3] = sapply(LMTS[,3], BinToDec)
+LMTS[,4] = sapply(LMTS[,4], BinToDec)
+
+LMTS = as.data.frame(LMTS) %>% unite("Path", 3:4, sep = "-")
+colnames(LMTS)[c(1:2,4)] = c("from","to","weight")
+LMTS$weight = 1/as.numeric(LMTS$weight)
+
+tidy = as_tbl_graph(LMTS, directed = T) 
+
+mins = sapply(mins,BinToDec)
+tidy = tidy %>% activate(nodes) %>%
+  mutate(Node_type = case_when(name %in% mins ~ "2 Minimum",
+                         name %in% saddles ~ "3 Saddle",
+                         T ~ "1 Node"))
+  
+plot = tidy %>%
+    ggraph()+
+    geom_edge_fan(aes(edge_color=Path))+
+    geom_node_point(aes(color=Node_type),size=5)+
+    scale_color_tableau()+
+    guides(color=guide_legend(title = "Node type"),
+           edge_width = F)+
+    theme_few()
+plot
+
+ggsave("figures/LMTS.png", plot)
+```
+
+
+## Simulate duration in basin - Metropolis-Hastings MCMC
 
 Start at random
 Get neighbours

@@ -8,7 +8,7 @@ binarize = function(data){
   return(apply(data, 1, function(x) ifelse(x >= median(x), 1, -1)) %>% t())
 }
 
-pMEM_PL = function(data, lr_rate = 0.2, iter_max = 5e6, stopping = 1e-8) {
+pMEM_PL = function(data, lr_rate = 0.2, iter_max = 5e6, stopping = 1e-9) {
   len = ncol(data)
   N = nrow(data)
   mean_emp = rowMeans(data)
@@ -29,6 +29,7 @@ pMEM_PL = function(data, lr_rate = 0.2, iter_max = 5e6, stopping = 1e-8) {
     if (sqrt(norm(likelihood_J, type = "F")^2 + norm(likelihood_h, type="2")^2)/N/(N+1) < stopping) {break
     }
   }
+  cat("Iterations:",i)
   return(list(h=h,J=J))
 }
 
@@ -66,7 +67,7 @@ get_empirical_prob = function(data){
   states = get_states(nrow(data),"1") %>% t() %>% as.data.frame() %>% unite("state", sep = "") 
   
   add_states = data.frame(state=states[which(!(states$state %in% states_emp)),])
-  add_states$count = rep(0,nrow(add_states))
+  add_states$count = rep(1,nrow(add_states))
   
   unique_new = rbind(unique,add_states)
   unique_new = unique_new[order(unique_new$state),]
@@ -90,6 +91,13 @@ get_energy = function(parameter_list) {
   return((Z1-Z2))
 }
 
+get_R2 = function(empirical, predicted){
+  loglog = data.frame(empirical = empirical, predicted = predicted)
+  
+  m1 = lm(empirical ~ predicted, loglog)
+  return(summary(m1)$r.squared)
+}
+
 pMEM_eval = function(data,parameters){
   len = ncol(data)
   N = nrow(data)
@@ -100,9 +108,6 @@ pMEM_eval = function(data,parameters){
   
   #Compute empirical probability and its entropy
   prob_emp = as.matrix(get_empirical_prob(data))
-  
-  #to avoid log(0) - going to infinity
-  prob_emp = prob_emp+1e-100
   
   Ent_emp = sum(-prob_emp * log2(prob_emp))
   
@@ -135,10 +140,10 @@ pMEM_eval = function(data,parameters){
   
   d = round((D1-D2)/D1,3)
   
-  #mean squared error
-  MSE = mean((prob_emp-pMEM_prob)^2)
+  #R2
+  R2 = get_R2(prob_emp,pMEM_prob)
   
-  result = list(r = r, d = d, MSE = MSE)
+  result = list(r = d, R2 = R2)
   
   return(result)
 }
@@ -150,8 +155,8 @@ run_pMEM = function(data){
   
   result = list(parameters = params,
                 metrics = eval)
-  cat("\nModel converged\n r =",eval$r,
-      "\n d =",eval$d,
-      "\n MSE =",eval$MSE)
+  cat("\nModel converged\n",
+      "\n r =",eval$r,
+      "\n R2 =",eval$R2)
   return(result)
 }
