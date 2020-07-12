@@ -4,6 +4,7 @@ library(wesanderson)
 library(eegkit)
 library(fastICA)
 library(tictoc)
+library(dplyr)
 
 get_info = function(filename) {
   slash_split = strsplit(filename,"/")
@@ -13,6 +14,13 @@ get_info = function(filename) {
   return(cbind(ID,diagnosis,condition))
 }
 
+fix_colname = function(colname){
+  split = paste(strsplit(colname, "\\.")[[1]][-1], collapse = "")
+  split = gsub("0", "O", split)
+  split = toupper(split)
+  return(split)
+}
+
 load_data = function(path) {
   data = read.delim(path, header=T)
   
@@ -20,11 +28,18 @@ load_data = function(path) {
     data = data[-nrow(data),]
   }
   
+  #fix channel names
+  colnames(data)[-1] =  sapply(colnames(data)[-1], fix_colname)
+  
+  
+  #reorder channel names
+  col_order = c("Time","F8F4", "F7F3", "F4C4", "F3C3", "F4FZ", "F3FZ", "FZCZ", "T4C4", "T3C3", "C4CZ",
+                "C3CZ", "CZPZ", "C4P4", "C3P3", "T4T6", "T3T5", "P4PZ", "P3PZ", "T6O2", "T5O1", "P4O2",
+                "P3O1", "O1O2")
+  data = data[,col_order]
+  
   #attach participant info as attribute
   attr(data,"info") = get_info(path)
-  
-  #fix channel names
-  colnames(data) = c("Time","F8_F4","F7_F3","F4_C4","F3_C3","F4_FZ","F3_FZ","FZ_CZ","T4_C4","T3_C3","C4_CZ","C3_CZ","CZ_PZ","C4_P4","C3_P3","T4_T6","T3_T5","P4_PZ","P3_PZ","T6_O2","T5_O1","P4_O2","P3_O1","O1_O2")
   
   return(data)
 }
@@ -83,7 +98,7 @@ geom_head = function(){
                     yy = (2.5 * sin(seq(0, 2 * pi, l = 360))))
   ear2 = data.frame(xx = (0.5 * cos(seq(0, 2 * pi, l = 360)))+13,
                     yy = (2.5 * sin(seq(0, 2 * pi, l = 360))))
-  pal = wesanderson::wes_palette("Zissou1", 100, type = "continuous")
+  #pal = wesanderson::wes_palette("Zissou1", 100, type = "continuous")
   plot = ggplot(head,aes(xx,yy))+
     geom_path()+
     coord_cartesian(xlim=(c(-13, 13)),
@@ -94,8 +109,8 @@ geom_head = function(){
     geom_path(data=ear2, aes(xx,yy))+
     theme_void()+
     labs(x=NULL,
-         y=NULL)+
-    scale_color_gradientn(colours = pal)
+         y=NULL)
+    #scale_color_gradientn(colours = pal)
   return(plot)
 }
 
@@ -194,12 +209,40 @@ run_half_ica = function(data,ncomp = 8, locations, group){
 }
 
 
-preprocess = function(path){
+preprocess = function(path, wave = c("delta","theta","alpha","beta", "gamma", "full")){
   data = load_data(path)
   
-  #filter - notch and highpass (100 Hz)
   data[,-1] = apply(data[,-1], 2, filter_notch)
-  data[,-1] = apply(data[,-1], 2, filter_bandpass, upper=50)
+  
+  if (wave == "delta"){
+    #0 - 4 Hz
+    data[,-1] = apply(data[,-1], 2, filter_bandpass,upper=4)
+  }
+  
+  if (wave == "theta"){
+    #4 - 8 Hz
+    data[,-1] = apply(data[,-1], 2, filter_bandpass,lower = 3.999,upper=8.001)
+  }
+  
+  if (wave == "alpha"){
+    #8 - 14 Hz
+    data[,-1] = apply(data[,-1], 2, filter_bandpass,lower = 7.999,upper=14.001)
+  }
+  
+  if (wave == "beta"){
+    #14 - 30 Hz
+    data[,-1] = apply(data[,-1], 2, filter_bandpass,lower = 14,upper=30)
+  }
+  
+  if (wave == "gamma"){
+    # - 8 Hz
+    data[,-1] = apply(data[,-1], 2, filter_bandpass,lower = 30,upper=100)
+  }
+  
+  if (wave == "full"){
+    #0 - 100 Hz
+    data[,-1] = apply(data[,-1], 2, filter_bandpass, upper=100)
+  }
   
   data[,-1] = apply(data[,-1],2, amplitude_envelope)
   

@@ -15,7 +15,7 @@ source("scripts/preprocess.R")
 ## Load data and extract info from filename 
 ```{r}
 files = list.files("data/raw", full.names = T, recursive = T)
-d = load_data(files[2])
+d = load_data(files[8])
 attr(d,"info")
 ```
 
@@ -140,31 +140,129 @@ for (i in 1:length(files)){
 
 # Final pipeline
 
+## Plot montage
+```{r}
+names = c("F8_F4","F7_F3","F4_C4","F3_C3","F4_FZ","F3_FZ","FZ_CZ","T4_C4","T3_C3","C4_CZ","C3_CZ","CZ_PZ","C4_P4","C3_P3","T4_T6","T3_T5","P4_PZ","P3_PZ","T6_O2","T5_O1","P4_O2","P3_O1","O1_O2")
+
+#get positions of individual channels
+data(eegcoord)
+pair_locs = matrix(NA, length(names)*2, 3)
+
+single_channels = sapply(names, strsplit, split="_") %>% unlist() %>% unique()
+names(single_channels) = NULL
+
+single_df = eegcoord[single_channels, 4:5]
+colnames(single_df) = c("x","y")
+single_df$channel = single_channels
+
+single_df[single_df$channel=="T3",1:2] = eegcoord["T7",4:5]
+single_df[single_df$channel=="T4",1:2] = eegcoord["T8",4:5]
+single_df[single_df$channel=="T5",1:2] = eegcoord["P7",4:5]
+single_df[single_df$channel=="T6",1:2] = eegcoord["P8",4:5]
+
+geom_head()+
+  geom_text(data=single_df, aes(x,y, label=channel))+
+  geom_point(data=single_df, aes(x,y), shape=1, size=9)
+
+#construct lines between channel pairs
+channel_loc = matrix(0, length(names),5)
+colnames(channel_loc) = c("x_start", "y_start", "x_end","y_end", "channel")
+channel_loc[,"channel"] = names
+
+for(i in 1:length(names)){
+  pair_name = strsplit(names[i],"_")[[1]]
+  
+  channel_loc[i,1:2] = as.numeric(single_df[single_df$channel==pair_name[1],1:2])
+  channel_loc[i,3:4] = as.numeric(single_df[single_df$channel==pair_name[2],1:2])
+}
+
+channel_loc = as.data.frame(channel_loc)
+
+channel_loc$x_start = as.numeric(channel_loc$x_start)
+channel_loc$y_start = as.numeric(channel_loc$y_start)
+channel_loc$x_end = as.numeric(channel_loc$x_end)
+channel_loc$y_end = as.numeric(channel_loc$y_end)
+
+montage = geom_head()+
+  geom_text(data=single_df, aes(x,y, label=channel))+
+  geom_point(data=single_df, aes(x,y), shape=1, size=9)
+```
+
+
 ## Plot selected channels
 ```{r}
-selected_channels = c("P3_O1", "T6_O2", "P4_PZ", "T3_T5", "T3_C3", "F3_FZ", "F4_C4")
+selected_channels = c("P3_O1", "T6_O2", "P4_PZ", "T3_T5", "F3_FZ", "F4_C4")# "T5_O1", "P3_PZ", "C3_P3", "C4_P4")
 
-selected_df = locs
-selected_df$label = row.names(selected_df)
-selected_df = selected_df[selected_df$label %in% selected_channels,]
+channel_loc$selected = ifelse(channel_loc$channel %in% selected_channels, "selected", "1")
 
-(channels_plot = geom_head()+
-  geom_point(data=selected_df, aes(x,y),size=16, color="navy")+
-  geom_text(data=selected_df, aes(x,y, label=label), color="white"))
+channels_plot = geom_head()+
+  geom_text(data=single_df, aes(x,y, label=channel), size=5.5)+
+  geom_point(data=single_df, aes(x,y), shape=1, size=11)+
+  geom_segment(data=channel_loc, aes(x = x_start, y = y_start, xend=x_end, yend=y_end, colour=selected), alpha=0.4, size=3, lineend = "butt", linejoin = "bevel")+
+  scale_color_manual(breaks = c("Selected"),
+                     values = c("grey", "blue"))
+channels_plot
+  
 
-ggsave("figures/overview_montage.png", channels_plot)
+ggsave("figures/selected_channels.png", channels_plot, width = 7, height = 7)
 ```
 
 
 ```{r}
 files = list.files("data/raw", full.names = T, recursive = T)
 
+#full spectrum
 for (i in 1:length(files)){
-  data = preprocess(files[i])
-  data = data[,selected_channels]
+  data = preprocess(files[i], wave = "full")
   new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
-  save_to = paste0("data/clean/",new_name,".RData")
+  save_to = paste0("data/clean_full/",new_name,".RData")
   save(data,file=save_to)
+  print(i)
+}
+
+#delta
+for (i in 1:length(files)){
+  data = preprocess(files[i], wave = "delta")
+  new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
+  save_to = paste0("data/clean_delta/",new_name,".RData")
+  save(data,file=save_to)
+  print(i)
+}
+
+#theta
+for (i in 1:length(files)){
+  data = preprocess(files[i], wave = "theta")
+  new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
+  save_to = paste0("data/clean_theta/",new_name,".RData")
+  save(data,file=save_to)
+  print(i)
+}
+
+#alpha
+for (i in 1:length(files)){
+  data = preprocess(files[i], wave = "alpha")
+  new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
+  save_to = paste0("data/clean_alpha/",new_name,".RData")
+  save(data,file=save_to)
+  print(i)
+}
+
+#beta
+for (i in 1:length(files)){
+  data = preprocess(files[i], wave = "beta")
+  new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
+  save_to = paste0("data/clean_beta/",new_name,".RData")
+  save(data,file=save_to)
+  print(i)
+}
+
+#gamma
+for (i in 1:length(files)){
+  data = preprocess(files[i], wave = "gamma")
+  new_name = paste(attr(data,"info")[1],attr(data,"info")[2],attr(data,"info")[3],sep = "_")
+  save_to = paste0("data/clean_gamma/",new_name,".RData")
+  save(data,file=save_to)
+  print(i)
 }
 ```
 

@@ -5,10 +5,10 @@ library(ggthemes)
 library(gtools)
 
 binarize = function(data){
-  return(apply(data, 1, function(x) ifelse(x >= median(x), 1, -1)) %>% t())
+  return(apply(data, 1, function(x) ifelse(x >= mean(x), 1, -1)) %>% t())
 }
 
-pMEM_PL = function(data, lr_rate = 0.2, iter_max = 5e6, stopping = 1e-9) {
+pMEM_PL = function(data, lr_rate = 0.08, iter_max = 1e5, stopping = 1e-9) {
   len = ncol(data)
   N = nrow(data)
   mean_emp = rowMeans(data)
@@ -29,7 +29,7 @@ pMEM_PL = function(data, lr_rate = 0.2, iter_max = 5e6, stopping = 1e-9) {
     if (sqrt(norm(likelihood_J, type = "F")^2 + norm(likelihood_h, type="2")^2)/N/(N+1) < stopping) {break
     }
   }
-  cat("Iterations:",i)
+  cat("\nIterations:",i)
   return(list(h=h,J=J))
 }
 
@@ -155,8 +155,37 @@ run_pMEM = function(data){
   
   result = list(parameters = params,
                 metrics = eval)
-  cat("\nModel converged\n",
-      "\n r =",eval$r,
-      "\n R2 =",eval$R2)
   return(result)
+}
+
+run_folder = function(wave_band, selection, selection_name){
+  input = paste0("data/clean_", wave_band)
+  files = list.files(input, full.names = T)
+  files = files[c(-29,-30)]
+  
+  pMEM_results = matrix(NA, length(files), 5)
+  colnames(pMEM_results) = c("ID", "diagnosis", "condition", "r", "R2") #29
+  for (i in 1:length(files)){
+    load(files[i])
+    data = data[,selection]
+    data = t(data)
+    results = run_pMEM(data)
+    save_to = paste0("data/pMEM_", selection_name, "/",wave_band, "/",strsplit(files[i],"/")[[1]][3])
+    save(results, file = save_to)
+    
+    info = strsplit(strsplit(files[i],"/")[[1]][3],"_")[[1]]
+    ID = info[1]
+    diagnosis = info[2]
+    condition = strsplit(info[3],"\\.")[[1]][1]
+    
+    results_row = cbind(ID, diagnosis, condition, results$metrics$r, results$metrics$R2)
+    
+    pMEM_results[i,] = results_row
+  }
+  
+  pMEM_results = as.data.frame(pMEM_results)
+  pMEM_results = na.omit(pMEM_results)
+  
+  output = paste0("results/pMEM_metrics/",selection_name, "_", wave_band, ".csv")
+  readr::write_csv(pMEM_results, output)
 }
