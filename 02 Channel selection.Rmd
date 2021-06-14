@@ -1,0 +1,329 @@
+---
+title: "Channel selection"
+author: "Dominik Klepl"
+output: html_document
+---
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggthemes)
+library(foreach)
+library(doParallel)
+library(magrittr)
+
+#setup parallel processing
+numCores = 12
+registerDoParallel(numCores)
+
+dir.create("channel_selection")
+```
+
+## Entropy selection
+Select N channels with the highest entropy
+```{r}
+#compute Shannon entropy
+shannon = function(x){
+  dens = density(x)$y
+  return(entropy::entropy(dens))
+}
+
+select_n_ent = function(folder){
+  files = list.files(folder, full.names = T)
+  
+  shannon = function(x){
+    dens = density(x)$y
+    return(entropy::entropy(dens))
+  }
+  
+  result = foreach(i=1:length(files), .combine = "rbind",
+                   .packages = c("dplyr","tidyr")) %dopar% {
+    load(files[i])
+    data %>% 
+      select(-Time) %>%
+      summarise_all(shannon)
+  }
+  
+  order = result %>%
+    summarise_all(mean) %>%
+    pivot_longer(cols = 1:23) %>%
+    arrange(-value)
+  return(order)
+}
+
+folders = list.files("data", full.names = T)[2:7]
+
+ent_selections = list()
+for(i in 1:length(folders)){
+  selected  = select_n_ent(folders[i])
+  name = strsplit(strsplit(folders[i], "/")[[1]][2], "_")[[1]][2]
+  ent_selections[[name]] = selected
+  print(name)
+}
+
+save(ent_selections, file = "channel_selection/entropy_based.RData")
+stopImplicitCluster()
+```
+
+# SVM Selection
+Select the most important channels based on permutation importance. More specifically, train SVM using all channels as features to predict diagnosis (AD/HC). Compute permutation importance of each channel and remove channel with lowest importance and re-train SVM. Continue while accuracy is improving. 
+```{r}
+library(caret)
+library(foreach)
+library(doParallel)
+library(dplyr)
+```
+
+## Load and merge files (from one frequency band)
+```{r}
+data_folders = list.files("data", full.names = T)[2:7]
+
+registerDoParallel(cores = 6)
+
+dir.create("data/merged_clean")
+for(folder in data_folders){
+  files = list.files(folder, full.names = T)
+  all = foreach (i = 1:length(files), .combine = "rbind") %dopar% {
+    load(files[i])
+    data = as.data.frame(eegkit::eegresample(data, (nrow(data)/2000)*250))
+    data = data[1:250,-1]
+    info = strsplit(strsplit(files[i],"/")[[1]][3],"_")[[1]]
+    info[4] = gsub(".RData", "", info[4])
+    
+    data$ID = info[1]
+    data$diagnosis = info[2]
+    data$condition = info[3]
+    data$epoch = info[4]
+    data
+  }
+  save_as = paste0("data/merged_clean/",strsplit(folder,"_")[[1]][2], ".RData")
+  save(all, file = save_as)
+}
+stopImplicitCluster()
+```
+
+## Train SVM
+```{r}
+select_features = function(file){
+  load(file)
+  
+  all = all %>% select(-condition, -epoch) %>%
+    mutate(diagnosis = as.factor(diagnosis))
+  
+  folds = groupKFold(all$ID, 5)
+  all = select(all, -ID)
+  
+  fitControl = trainControl(method = "cv",number = 5, allowParallel = T, index = folds)
+  
+  #backward feature selection
+  acc_best = 0
+  acc_last = 0
+  results = data.frame()
+  data = all
+  while((acc_best <= acc_last)==T){
+    model = train(diagnosis ~ ., data = data, 
+                   method = 'svmRadial',
+                  preProcess = c("center", "scale"),
+                   trControl = fitControl)
+    importance = varImp(model)$importance
+    importance = arrange(data.frame(var = rownames(importance), imp = importance$AD), imp)
+    acc_last = max(model$results$Accuracy)
+    remove = importance$var[1]
+    importance = arrange(importance, -imp)
+    result = cbind(paste(importance$var, sep = "", collapse = "+"), acc_last)
+    data = dplyr::select(data, -remove)
+    
+    if(acc_best<acc_last){
+      acc_best = acc_last
+      results = rbind(results, result)
+      print(acc_best)
+    }
+  }
+  
+  colnames(results) = c("Vars", "Accuracy")
+  name = strsplit(strsplit(file, "/")[[1]][3],"\\.")[[1]][1]
+  save_as = paste0("channel_selection/SVM/SVM_", name,".csv")
+  readr::write_csv(results, save_as)
+}
+```
+
+Loop through all frequency bands - i.e. make unique channel selection for each frequency band
+```{r}
+files = list.files("data/merged_clean", full.names = T)
+
+registerDoParallel(numCores)
+foreach(f = files) %do% {
+  print(f)
+  select_features(f)
+}
+
+stopImplicitCluster()
+```
+
+## Reformat the model channel selection
+Combine the channel selections into one file
+```{r}
+files = list.files("channel_selection/SVM", full.names = T)
+
+SVM_selections = foreach(i = 1:length(files), .combine = "cbind") %do% {
+  d = read.csv(files[i])
+  selected = d$Vars[nrow(d)]
+  acc = round(d$Accuracy[nrow(d)],2)
+  selected = strsplit(selected, "\\+")[[1]]
+  
+  n_removed = 23 - length(selected)
+  add_NA = rep(NA, n_removed)
+  c(acc, selected, add_NA)
+} %>% as.data.frame()
+colnames(SVM_selections) = c("alpha", "beta", "delta", "full", "gamma", "theta")
+
+
+#reformat to rows - each selection is one row
+SVM_selections = as.data.frame(t(SVM_selections))
+SVM_selections$band = rownames(SVM_selections)
+colnames(SVM_selections)[1] = "accuracy"
+
+readr::write_csv(SVM_selections, "channel_selection/SVM_based.csv")
+```
+
+#Find intersection between the methods
+Produce final channel selections by finding 10 channels selected by both methods (entropy and SVM). If there's less than 10 common channels, the SVM-selection is prefered.
+```{r}
+library(dplyr)
+load("channel_selection/entropy_based.RData")
+entropy = foreach(i=names(ent_selections), .combine = "rbind")%do%{
+  ent_selections[[i]]$name %>% as.data.frame() %>% t() %>% as.data.frame() %>%
+    mutate(band = i)
+}
+
+SVM = read.csv("channel_selection/SVM_based.csv") %>% select(-accuracy)
+
+bands = c("alpha", "beta", "delta", "full", "gamma", "theta")
+
+
+overlap = foreach(b = bands) %do% {
+  ent = entropy %>% dplyr::filter(band==b) %>% select(-band) %>% as.character() %>% .[1:15]
+  SVM_one = SVM %>% dplyr::filter(band==b) %>% select(-band) %>% as.character() %>% na.omit() %>% .[1:15]
+  intersect(SVM_one, ent)
+}
+
+names(overlap) = bands
+
+#final selection
+final = foreach(b=names(overlap), .combine = "rbind")%do%{
+  i = overlap[[b]]
+  if(length(i)==10){
+    res = c(i,b)
+  }
+  if(length(i)>10){
+    res = c(i[1:10],b)
+  }
+  if(length(i)<10){
+    N = 10-length(i) #how many to add from SVM selection
+    SVM_add = SVM %>% filter(band==b) %>% select(-band) %>% as.character()
+    add = setdiff(SVM_add,i)[1:N]
+    res = c(i,add,b)
+  }
+  res
+} %>% as.data.frame()
+
+readr::write_csv(final, "channel_selection/final_selection.csv")
+```
+
+## Plot final selection on montage
+Creates Figure 2.
+```{r}
+source("scripts/preprocess.R")
+library(dplyr)
+data = readr::read_csv("channel_selection/final_selection.csv")
+
+locs = get_channel_loc()
+```
+
+Create montage
+```{r}
+names = c("F8_F4","F7_F3","F4_C4","F3_C3","F4_FZ","F3_FZ","FZ_CZ","T4_C4","T3_C3","C4_CZ","C3_CZ","CZ_PZ","C4_P4","C3_P3","T4_T6","T3_T5","P4_PZ","P3_PZ","T6_O2","T5_O1","P4_O2","P3_O1","O1_O2")
+
+#get positions of individual channels
+data(eegcoord)
+pair_locs = matrix(NA, length(names)*2, 3)
+
+single_channels = sapply(names, strsplit, split="_") %>% unlist() %>% unique()
+names(single_channels) = NULL
+
+single_df = eegcoord[single_channels, 4:5]
+colnames(single_df) = c("x","y")
+single_df$channel = single_channels
+
+single_df[single_df$channel=="T3",1:2] = eegcoord["T7",4:5]
+single_df[single_df$channel=="T4",1:2] = eegcoord["T8",4:5]
+single_df[single_df$channel=="T5",1:2] = eegcoord["P7",4:5]
+single_df[single_df$channel=="T6",1:2] = eegcoord["P8",4:5]
+
+geom_head()+
+  geom_text(data=single_df, aes(x,y, label=channel))+
+  geom_point(data=single_df, aes(x,y), shape=1, size=9)
+
+#construct lines between channel pairs
+channel_loc = matrix(0, length(names),5)
+colnames(channel_loc) = c("x_start", "y_start", "x_end","y_end", "channel")
+channel_loc[,"channel"] = names
+
+for(i in 1:length(names)){
+  pair_name = strsplit(names[i],"_")[[1]]
+  
+  channel_loc[i,1:2] = as.numeric(single_df[single_df$channel==pair_name[1],1:2])
+  channel_loc[i,3:4] = as.numeric(single_df[single_df$channel==pair_name[2],1:2])
+}
+
+channel_loc = as.data.frame(channel_loc)
+
+channel_loc$x_start = as.numeric(channel_loc$x_start)
+channel_loc$y_start = as.numeric(channel_loc$y_start)
+channel_loc$x_end = as.numeric(channel_loc$x_end)
+channel_loc$y_end = as.numeric(channel_loc$y_end)
+
+channel_loc$channel = gsub("_", "", channel_loc$channel)
+
+montage = geom_head()+
+  geom_point(data=single_df, aes(x,y), size=16, fill="grey", shape=21,alpha=0.3)+
+  geom_text(data=single_df, aes(x,y, label=channel), size=7.5)
+```
+
+Plot selections
+```{r}
+plot_selection = function(selected, title) {
+  channel_loc$selected = ifelse(channel_loc$channel %in% selected, "selected", "1")
+  
+  channel_plot = montage+
+    geom_segment(data=channel_loc, aes(x = x_start, y = y_start, xend=x_end, yend=y_end, colour=selected), alpha=0.3, size=2.5, lineend = "butt", linejoin = "bevel")+
+    scale_color_manual(breaks = c("Selected"),
+                       values = c("grey", "blue"))+
+    theme(plot.title = element_text(hjust = 0.5, size=25))+
+    labs(title = title)
+  return(channel_plot)
+}
+```
+
+```{r}
+selections = read.csv("channel_selection/final_selection.csv")
+colnames(selections)[11] = "band"
+
+bands = unique(selections$band)
+
+library(foreach)
+final_plots = foreach(b = bands) %do% {
+  selection = selections %>% dplyr::filter(band == b) %>% select(-band) %>% as.character() %>% na.omit()
+  plot_selection(selection, b)
+}
+names(final_plots) = bands
+
+#put the different selections into a single figure
+library(patchwork)
+balanced_plot = (final_plots$alpha | final_plots$beta | final_plots$delta)/
+(final_plots$gamma | final_plots$theta | final_plots$full)
+balanced_plot
+
+ggsave("figures/selected_channels.png", balanced_plot, width = 9.5, height = 7)
+ggsave("figures/pdf/selected_channels.pdf", balanced_plot, width = 9.5, height = 7)
+```

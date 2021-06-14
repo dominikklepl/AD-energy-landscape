@@ -1,0 +1,153 @@
+---
+title: "Whole Analysis Pipeline"
+author: "Dominik Klepl"
+date: "1/1/2021"
+output: html_document
+---
+
+#1. Preprocess data
+The following code preprocess the raw data: fix channel names and put them in specified order,remove 50 Hz noise and filter the data into a specified frequency band.
+```{r}
+source("scripts/preprocess.R")
+
+library(foreach)
+library(doParallel)
+numCores = 6
+
+registerDoParallel(numCores)
+
+#location of raw data
+files = list.files("data/raw", full.names = T)
+
+#full spectrum
+dir.create("data/clean_full")
+foreach (i=1:length(files)) %dopar%{
+  source("scripts/preprocess.R")
+  info = strsplit(files[i], "/")[[1]][3]
+  data = preprocess(files[i], wave = "full")
+  info = strsplit(files[i], "/")[[1]][3]
+  ID = strsplit(info, " ")[[1]][1]
+  diagnosis = strsplit(info, " ")[[1]][2]
+  condition = strsplit(info, " ")[[1]][3]
+  epoch = strsplit(info, " ")[[1]][4] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+  
+  new_name = paste(ID, diagnosis, condition, epoch,sep = "_")
+  save_to = paste0("data/clean_full/",new_name,".RData")
+  save(data,file=save_to)
+}
+
+#delta
+dir.create("data/clean_delta")
+foreach (i=1:length(files)) %dopar%{
+  source("scripts/preprocess.R")
+  info = strsplit(files[i], "/")[[1]][3]
+  data = preprocess(files[i], wave = "delta")
+  info = strsplit(files[i], "/")[[1]][3]
+  ID = strsplit(info, " ")[[1]][1]
+  diagnosis = strsplit(info, " ")[[1]][2]
+  condition = strsplit(info, " ")[[1]][3]
+  epoch = strsplit(info, " ")[[1]][4] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+  
+  new_name = paste(ID, diagnosis, condition, epoch,sep = "_")
+  save_to = paste0("data/clean_delta/",new_name,".RData")
+  save(data,file=save_to)
+}
+
+#theta
+dir.create("data/clean_theta")
+foreach (i=1:length(files)) %dopar%{
+  source("scripts/preprocess.R")
+  info = strsplit(files[i], "/")[[1]][3]
+  data = preprocess(files[i], wave = "theta")
+  info = strsplit(files[i], "/")[[1]][3]
+  ID = strsplit(info, " ")[[1]][1]
+  diagnosis = strsplit(info, " ")[[1]][2]
+  condition = strsplit(info, " ")[[1]][3]
+  epoch = strsplit(info, " ")[[1]][4] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+  
+  new_name = paste(ID, diagnosis, condition, epoch,sep = "_")
+  save_to = paste0("data/clean_theta/",new_name,".RData")
+  save(data,file=save_to)
+}
+
+#alpha
+dir.create("data/clean_alpha")
+foreach (i=1:length(files)) %dopar%{
+  source("scripts/preprocess.R")
+  info = strsplit(files[i], "/")[[1]][3]
+  data = preprocess(files[i], wave = "alpha")
+  info = strsplit(files[i], "/")[[1]][3]
+  ID = strsplit(info, " ")[[1]][1]
+  diagnosis = strsplit(info, " ")[[1]][2]
+  condition = strsplit(info, " ")[[1]][3]
+  epoch = strsplit(info, " ")[[1]][4] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+  
+  new_name = paste(ID, diagnosis, condition, epoch,sep = "_")
+  save_to = paste0("data/clean_alpha/",new_name,".RData")
+  save(data,file=save_to)
+}
+
+#beta
+dir.create("data/clean_beta")
+foreach (i=1:length(files)) %dopar%{
+  source("scripts/preprocess.R")
+  info = strsplit(files[i], "/")[[1]][3]
+  data = preprocess(files[i], wave = "beta")
+  info = strsplit(files[i], "/")[[1]][3]
+  ID = strsplit(info, " ")[[1]][1]
+  diagnosis = strsplit(info, " ")[[1]][2]
+  condition = strsplit(info, " ")[[1]][3]
+  epoch = strsplit(info, " ")[[1]][4] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+  
+  new_name = paste(ID, diagnosis, condition, epoch,sep = "_")
+  save_to = paste0("data/clean_beta/",new_name,".RData")
+  save(data,file=save_to)
+}
+
+#gamma
+dir.create("data/clean_gamma")
+foreach (i=1:length(files)) %dopar%{
+  source("scripts/preprocess.R")
+  info = strsplit(files[i], "/")[[1]][3]
+  data = preprocess(files[i], wave = "gamma")
+  info = strsplit(files[i], "/")[[1]][3]
+  ID = strsplit(info, " ")[[1]][1]
+  diagnosis = strsplit(info, " ")[[1]][2]
+  condition = strsplit(info, " ")[[1]][3]
+  epoch = strsplit(info, " ")[[1]][4] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+  
+  new_name = paste(ID, diagnosis, condition, epoch,sep = "_")
+  save_to = paste0("data/clean_gamma/",new_name,".RData")
+  save(data,file=save_to)
+}
+
+stopImplicitCluster()
+```
+
+#2. Channel selection
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

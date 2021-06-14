@@ -1,0 +1,358 @@
+---
+title: "Energy Landscape: Pipeline"
+author: "Dominik Klepl"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+First we define a large function that fits pMEM, uses J parameters of pMEM to train SVM classifier (connectivity-based), extracts energy values of all states and trains SVM classifier (energy-based) and extract energy landscape features.
+This function is then used to optimise sampling frequency and window size so that the predictive accuracy is maximised.
+
+#Large pipeline function
+```{r}
+run_all = function(name="a", window=1, down=5, base="results/",
+               k = 10, repeats = 100){
+  #name - name of directory to save results
+  #window - window size to be used for binarisation of signals (in seconds), the window size is then computed as window*down
+  #down - sampling frequency to which to downsample
+  #base - root directory to save results
+  #k - for repeated k-fold cross-validation
+  #repeats - number of repetitions for repeated k-fold cross-validation
+  
+  
+  source("scripts/pMEM.R")
+  source("scripts/ELA.R")
+
+  #create folders for saving the results
+  root = paste0(base, name)
+  fold_pMEM = paste0(root, "/pMEM")
+  fold_pMEM_feat = paste0(fold_pMEM, "_features")
+  dir.create(base)
+  dir.create(root)
+  dir.create(fold_pMEM)
+  dir.create(fold_pMEM_feat)
+  
+  #downsample EEG to desired sampling frequency
+  downsample = function(x, freq){
+    len = length(x)/2000
+    
+    n = floor(len*freq)
+    return(eegkit::eegresample(x, n))
+  }
+  
+  #estimate pMEM for one frequency band
+  pMEM_band = function(wave_band, selection, size, down){
+    input = paste0("data/clean_", wave_band) #change to location of your data
+    files = list.files(input, full.names = T)
+    
+    pMEM_results = matrix(NA, length(files), 7)
+    colnames(pMEM_results) = c("ID", "diagnosis", "condition", "epoch", "band", "r", "R2") #29
+    for(i in 1:length(files)){
+      load(files[i])
+      data = data[,selection]
+      
+      #downsample
+      data = apply(data, 2, downsample, freq=down) %>% as.data.frame()
+      
+      results = run_pMEM(data, size)
+      
+      info = strsplit(strsplit(files[i],"/")[[1]][3],"_")[[1]]
+      ID = info[1]
+      diagnosis = info[2]
+      condition = info[3]
+      epoch = strsplit(info[4],"\\.")[[1]][1]
+      
+      #save to data/pMEM_3_500Hz
+      filename = paste0(wave_band,"_",strsplit(files[i],"/")[[1]][3])
+      save_to = paste0(fold_pMEM,"/",filename)
+      save(results, file = save_to)
+      
+      results_row = cbind(ID, diagnosis, condition, epoch, wave_band, results$metrics$r, results$metrics$R2)
+      
+      pMEM_results[i,] = results_row
+    }
+    
+    pMEM_results = as.data.frame(pMEM_results)
+    pMEM_results = na.omit(pMEM_results)
+    
+    return(pMEM_results)
+  }
+  
+  
+  #load the 10 selected channels
+  selections = readr::read_csv("channel_selection/final_selection.csv")
+  bands = c("alpha", "beta", "delta", "full", "gamma", "theta")
+  
+  #estimate pMEM for each frequency band
+  registerDoParallel(6)
+  result = foreach (b = bands, .combine = "rbind", .packages = "tidyverse") %dopar% {
+    source("scripts/pMEM.R")
+    selection = selections %>% dplyr::filter(V11 == b)
+    selection = as.character(selection[1,1:10]) %>% na.omit()
+    r=pMEM_band(wave_band = b, selection = selection, size=window, down = down)
+  }
+  stopImplicitCluster()
+  readr::write_csv(result, paste0(root,"/pMEM_metrics.csv"))
+  
+  #collect J and h parameters of pMEM to be used for ML
+  files = list.files(fold_pMEM, full.names = T)
+  bands = c("alpha", "beta", "delta", "full", "gamma", "theta")
+  
+  registerDoParallel(6)
+  for(b in bands){
+    Jh_features = foreach(f=files[grep(b,files)], .combine = "rbind", .packages = "tidyverse") %dopar% {
+      load(f)
+      J = results$parameters$J
+      J[lower.tri(J)] = 0
+      diag(J) = results$parameters$h + 1e-50
+      J = reshape2::melt(J) %>% filter(value != 0) %>% unite("name",Var1:Var2)
+      res = J$value
+      names(res) = J$name
+      res = as.data.frame(t(res))
+      
+      res$band = strsplit(f, "/")[[1]][4] %>% strsplit("_") %>% .[[1]] %>% .[1]
+      res$ID = strsplit(f, "/")[[1]][4] %>% strsplit("_") %>% .[[1]] %>% .[2]
+      res$diagnosis = strsplit(f, "/")[[1]][4] %>% strsplit("_") %>% .[[1]] %>% .[3]
+      res$condition = strsplit(f, "/")[[1]][4] %>% strsplit("_") %>% .[[1]] %>% .[4]
+      res$epoch = strsplit(f, "/")[[1]][4] %>% strsplit("_") %>% .[[1]] %>% .[5] %>% strsplit("\\.") %>% .[[1]] %>% .[1]
+      res
+    }
+    
+    save_to = paste0(fold_pMEM_feat,"/", b, ".csv")
+    readr::write_csv(Jh_features, save_to)
+  }
+  stopImplicitCluster()
+  
+  #ML on connectivity
+  library(caret)
+  files = list.files(fold_pMEM_feat, full.names = T)
+  
+  fit_ctrl = trainControl(method = "repeatedcv",
+                        number = k,
+                        repeats = repeats,
+                        verboseIter = F,
+                        classProbs = T,
+                        summaryFunction = twoClassSummary,
+                        savePredictions = "final",
+                        allowParallel = T)
+
+  registerDoParallel(11)
+
+  method = 'svmRadial'
+  results = foreach(f = files, .combine = "rbind") %do% {
+    df = read.csv(f)
+    band = unique(df$band)
+    
+    EC = df %>% filter(condition=="EC") %>% select(-band, -condition, -epoch, -ID)
+    EO = df %>% filter(condition=="EO") %>% select(-band, -condition, -epoch, -ID)
+    
+    model = train(diagnosis ~ .,
+                      data = EC,
+                      trControl = fit_ctrl,
+                      method = method,
+                  preProcess = c("scale", "center", "pca"),
+                  metric = "ROC")
+    resamp_EC = data.frame(band=band, 
+                           condition = "EC", 
+                           AUC = model$resample$ROC,
+                           Sensitivity = model$resample$Sens,
+                           Specificity = model$resample$Spec)
+    
+    model = train(diagnosis ~ .,
+                      data = EO,
+                      trControl = fit_ctrl,
+                      method = method,
+                  preProcess = c("scale", "center", "pca"),
+                  metric = c("ROC"))
+    resamp_EO = data.frame(band=band, 
+                           condition = "EO", 
+                           AUC = model$resample$ROC,
+                           Sensitivity = model$resample$Sens,
+                           Specificity = model$resample$Spec)
+    
+    result = rbind(resamp_EC, resamp_EO)
+    result
+  }
+  stopImplicitCluster()
+  readr::write_csv(results, paste0(root,"/ML_connectivity.csv"))
+  
+  #ML on energy
+  
+  ## collect energies of all states
+  source("scripts/collect_energy_features.R")
+
+  data = collect_energy(fold_pMEM, cores = 2)
+  save_to = paste0(root,"/states_energy.RData")
+  save(data, file = save_to)
+  
+  #models
+  data$diagnosis = as.factor(data$diagnosis)
+  bands = unique(data$band)
+  
+  fit_ctrl = trainControl(method = "repeatedcv",
+                          number = k,
+                          repeats = repeats,
+                          verboseIter = F,
+                          classProbs = T,
+                          summaryFunction = twoClassSummary,
+                          savePredictions = "final",
+                          allowParallel = T)
+  
+  registerDoParallel(12)
+  
+  method = 'svmRadial'
+  results = foreach(b = bands, .combine = "rbind") %do% {
+    df = data %>% filter(band==b)
+    EC = df %>% filter(condition=="EC") %>% select(-band, -condition, -epoch, -ID)
+    EO = df %>% filter(condition=="EO") %>% select(-band, -condition, -epoch, -ID)
+    
+    model = train(diagnosis ~ .,
+                      data = EC,
+                      trControl = fit_ctrl,
+                      method = method,
+                  preProcess = c("scale", "center", "pca"),
+                  metric = "ROC")
+    resamp_EC = data.frame(band=b, 
+                           condition = "EC", 
+                           AUC = model$resample$ROC,
+                           Sensitivity = model$resample$Sens,
+                           Specificity = model$resample$Spec)
+    
+    model = train(diagnosis ~ .,
+                      data = EO,
+                      trControl = fit_ctrl,
+                      method = method,
+                  preProcess = c("scale", "center", "pca"),
+                  metric = c("ROC"))
+    resamp_EO = data.frame(band=b, 
+                           condition = "EO", 
+                           AUC = model$resample$ROC,
+                           Sensitivity = model$resample$Sens,
+                           Specificity = model$resample$Spec)
+    result = rbind(resamp_EC, resamp_EO)
+    result
+  }
+  stopImplicitCluster()
+  readr::write_csv(results, paste0(root,"/ML_energy.csv"))
+  
+  #extract energy features
+  source("scripts/ELA.R")
+  library(foreach)
+  library(doParallel)
+  
+  #construct energy landscape and extract features
+  analyze_energy_landscape = function(file){
+    source("scripts/ELA.R")
+    load(file)
+    
+    fname = strsplit(file, "/")[[1]][4]
+    band = strsplit(fname, "_")[[1]][1]
+    ID = strsplit(fname, "_")[[1]][2]
+    diagnosis = strsplit(fname, "_")[[1]][3]
+    condition = strsplit(fname, "_")[[1]][4]
+    epoch = strsplit(strsplit(fname, "_")[[1]][5], "\\.")[[1]][1]
+    
+    info = data.frame(band, ID, diagnosis, condition, epoch)
+    
+    
+    #data.frame for storing results
+    features = data.frame(minima = NA, E_diff = NA, basin_sd = NA, duration = NA)
+    
+    states_energy = get_state_energy(results$parameters)
+    adj = get_adjacency(states_energy$state)
+    
+    #local minima related features
+    minima = find_minima(adj, states_energy)
+    features$minima = nrow(minima)
+    
+    features$E_diff = mean_energy_difference(minima)
+    if(is.na(features$E_diff)){features$E_diff=0}
+    
+    global_min = minima$state[minima$energy==min(minima$energy)]
+    
+    #basin size
+    basin_df = basin_size_estimator(adj, states_energy)
+    #basin_plot = plot_basin(basin_df)
+    features$basin_sd = basin_df$membership %>% 
+      group_by(basin) %>%
+      summarise(count = n()) %>%
+      pull() %>%
+      sd()
+    
+    if(is.na(features$basin_sd)){features$basin_sd= nrow(basin_df$membership)}
+    
+    #simulate transitions
+    duration = NULL
+    while(is_empty(duration)){
+      x = simulate_transitions(2e4, adj, states_energy)
+      duration = data.frame(state = x) %>%
+        left_join(basin_df$membership, by="state") %>%
+        group_by(basin) %>%
+        summarise(duration = n()) %>%
+        mutate(duration = duration/500)
+      duration = duration$duration[duration$basin==global_min]
+    }
+    features$duration = duration
+    
+    features = cbind(info, features)
+    return(features)
+  }
+  
+  #loop through all files (within the folder with fitted pMEM)
+  files = list.files(fold_pMEM, full.names = T)
+  
+  registerDoParallel(10)
+  results = foreach(f = files, .combine = "rbind", .packages = c("tidyverse")) %dopar% {
+    feat = try(analyze_energy_landscape(f))
+    
+    if(is.character(feat)){
+      rep(NA,(9))
+    } else {feat}
+  }
+  stopImplicitCluster()
+  
+  nas = which(is.na(results$band))
+  
+  for (n in nas){
+    results[n,] = try(analyze_energy_landscape(files[n]))
+  }
+  
+  readr::write_csv(results, paste0(root,"/energy_features.csv"))
+}
+```
+
+#Try different sampling frequencies and window sizes
+```{r}
+sampling = c(500, 1000, 1500, 2000)
+time = c(0.1,0.2,0.3,0.4,0.5,1,1.5,2,2.5,3,3.5,4)
+source("scripts/full_analysis.R")
+
+for(s in sampling){
+  for(t in time){
+    window = t*s
+    name = paste0(window, "_",s,"Hz")
+    if(dir.exists(paste0("results/",name))){
+      print(name)
+      next
+    }else{
+    run(name, window, s, base = "results/")
+    print(name)
+    }
+  }
+}
+```
+
+#Select the sampling frequency and window size
+```{r}
+TODO
+```
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,313 @@
+---
+title: "Results"
+author: "Dominik Klepl"
+output: html_document
+---
+
+
+Analyse pMEM metrics - what is the average goodness-of-fit and does it differ across frequency bands,conditions and diagnosis.
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(ggpubr)
+library(rstatix)
+
+df = read.csv("time_window_results/5250_1500Hz/pMEM_metrics.csv")
+df$diagnosis = as.factor(df$diagnosis)
+
+hist(df$r)
+
+df %>% anova_test(r ~ diagnosis+band*condition, wid=ID) %>% as_tibble() %>% mutate(p = round(p,3),
+                                                                                   `F` = round(`F`,3))
+mean(df$r)
+sd(df$r)
+
+m1 = lm(r ~ diagnosis*band*condition, df)
+hist(m1$residuals)
+```
+
+# Connectivity vs energy models
+Compare the models trained on connectivity features and energy values. We predicted that energy-based models are better.
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(rstatix)
+library(ggpubr)
+library(coin)
+library(foreach)
+root.dir = "results/5250_1500Hz/"
+
+connect = read.csv(paste0(root.dir,"ML_connectivity.csv")) %>% mutate(type = "Connectivity")
+energy = read.csv(paste0(root.dir,"ML_energy.csv")) %>% mutate(type = "Energy")
+all_samples = rbind(connect, energy)
+all_samples$band = factor(all_samples$band, levels = c("delta", "theta", "alpha", "beta", "gamma", "full"))
+all_samples$type = as.factor(all_samples$type)
+all_samples$condition = as.factor(all_samples$condition)
+
+m = lm(AUC~type*band*condition, all_samples)
+qqnorm(m$residuals)
+
+all_samples %>% 
+  anova_test(AUC ~ type*band*condition) %>% 
+  as_tibble() %>%
+  mutate(report = paste0("F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3)))
+
+report = all_samples %>%
+  group_by(band, condition) %>%
+  anova_test(AUC ~ type, wid = c(condition, band))%>% 
+  adjust_pvalue() %>%
+  add_significance() %>%
+  as_tibble() %>%
+  mutate(report = paste0("F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p.adj,3)))
+
+#interaction
+ML_stats = all_samples %>%
+  group_by(band, condition) %>%
+  tukey_hsd(AUC ~ type) %>%
+  add_xy_position(x="band", dodge = 0.8) %>%
+  mutate(.y. = "AUC",
+         p.adj.signif = ifelse(p.adj<=0.05,"*","ns"))
+
+plot = ggbarplot(all_samples, x="band", y="AUC",fill = "type", position = position_dodge(0.8), add="mean_ci", facet.by = "condition", add.params = list(width=0.35))+
+  theme_few()+
+  scale_fill_manual(values = c("#BA0C2F","#00629B"), name = "Predicted by")+
+  labs(x = "Frequency band", y = "AUC")+
+  scale_x_discrete(labels=c("alpha" = expression(alpha), "beta" = expression(beta),
+                              "delta" = expression(delta), "full" = "f", 
+                            "gamma" = expression(gamma),
+                            "theta" = expression(theta)))+
+  coord_cartesian(ylim=c(0.45,0.98))+
+  theme(axis.title = element_text(size=20),
+        axis.text.x = element_text(size=22),
+        axis.text.y = element_text(size=20),
+        strip.text = element_text(size=20),
+        legend.title = element_text(size=18),
+        legend.text = element_text(size=17),
+        legend.position = "bottom")
+plot
+
+ggsave("figures/ML_connectivity_vs_energy.png", plot, width = 8, height = 4)
+ggsave("figures/pdf/ML_connectivity_vs_energy.pdf", plot, width = 8, height = 4)
+
+#best energy performance
+energy %>% filter(band=="full") %>%
+  summarise(auc = mean(AUC),
+            sens = mean(Sensitivity),
+            spec = mean(Specificity))
+```
+
+
+# Energy landscape features
+
+4 features of energy landscape were extracted: number of local minima, energy difference between global minimum and local minima, SD of basin size and time in basin of global minimum.
+ANOVA is used to test for differences between diagnosis, conditions and frequency bands (+their ineraction). Significant effects are analysed post-hoc.
+```{r}
+library(ggplot2)
+library(ggthemes)
+library(patchwork)
+library(ggpubr)
+library(rstatix)
+library(dplyr)
+
+df = read.csv("time_window_results/5250_1500Hz/energy_features.csv")
+df$diagnosis = as.factor(df$diagnosis)
+df$condition = as.factor(df$condition)
+df$ID = as.factor(df$ID)
+df$band = factor(df$band, levels = c("delta", "theta", "alpha", "beta", "gamma", "full"))
+```
+
+## Local minima
+```{r}
+m1 = lm(minima ~ diagnosis*band*condition, df)
+qqnorm(m1$residuals)
+
+df %>% 
+  anova_test(minima ~ diagnosis*band*condition, wid = ID) %>% 
+  as_tibble() %>%
+  mutate(report = paste0("F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3)))
+
+#if significant interaction
+#stats = df %>% group_by(band, condition) %>% tukey_hsd(minima ~ diagnosis)
+
+minima = ggbarplot(df, "band", "minima", fill = "diagnosis", facet.by = "condition",
+          add="mean_se", add.params = list(width=0.35),
+          position = position_dodge(0.8))+
+    theme_few()+
+    scale_fill_manual(values = c("#BA0C2F","#00629B"), name = "Diagnosis")+
+  labs(x = NULL,y = "Local Minima")+
+  scale_x_discrete(labels=c("alpha" = expression(alpha), 
+                            "beta" = expression(beta),
+                            "delta" = expression(delta), 
+                            "full" = "f", 
+                            "gamma" = expression(gamma),
+                            "theta" = expression(theta)))+
+  coord_cartesian(ylim=c(5,10.1))+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=18),
+        strip.text.x = element_text(size=18),
+        legend.title = element_text(size=16),
+        legend.text = element_text(size=16),
+        legend.position = "bottom")
+minima
+```
+
+Energy difference
+```{r}
+m1 = lm(E_diff ~ diagnosis*band*condition, df)
+qqnorm(m1$residuals)
+
+df %>% 
+  anova_test(E_diff ~ diagnosis*band*condition, wid = ID) %>% 
+  as_tibble() %>%
+  mutate(report = paste0("F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3)))
+
+#if significant interaction
+stats = df %>% group_by(band) %>% anova_test(E_diff ~ diagnosis)
+
+E_diff = ggbarplot(df, "band", "E_diff", fill = "diagnosis", facet.by = "condition",
+          add="mean_se", add.params = list(width=0.35),
+          position = position_dodge(0.8))+
+    theme_few()+
+    scale_fill_manual(values = c("#BA0C2F","#00629B"), name = "Diagnosis")+
+  labs(x = NULL,y = "Energy Difference")+
+  scale_x_discrete(labels=c("alpha" = expression(alpha), "beta" = expression(beta),
+                              "delta" = expression(delta), "full" = "f", 
+                            "gamma" = expression(gamma),
+                            "theta" = expression(theta)))+
+  coord_cartesian(ylim = c(0.9,1.65))+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=18),
+        strip.text.x = element_text(size=18),
+        legend.title = element_text(size=16),
+        legend.text = element_text(size=16),
+        legend.position = "bottom")
+E_diff
+
+report = stats  %>% 
+  as_tibble() %>%
+  mutate(report = paste0("F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3)))
+```
+
+## Basin sd
+```{r}
+#make it normal
+hist(df$basin_sd)
+df$basin_sd = sqrt(df$basin_sd)
+
+m1 = lm(basin_sd ~ diagnosis*band*condition, df)
+qqnorm(m1$residuals)
+
+df %>% 
+  anova_test(basin_sd ~ diagnosis*band*condition, wid = ID) %>% 
+  as_tibble() %>%
+  mutate(report = paste0("$(F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3),")$"))
+
+#band:condition
+df %>% group_by(band) %>% anova_test(basin_sd ~ condition) %>%as_tibble() %>%
+  mutate(report = paste0("$(F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3),")$"))
+df %>% group_by(band) %>% tukey_hsd(basin_sd ~ condition)
+
+
+#group:band
+stats = df %>% group_by(band) %>% anova_test(basin_sd ~ diagnosis)
+
+#band:condition
+#stats = df %>% group_by(band) %>% tukey_hsd(basin_sd ~ condition)
+
+basin_sd = ggbarplot(df, "band", "basin_sd", fill = "diagnosis", facet.by = "condition",
+          add="mean_se", add.params = list(width=0.35),
+          position = position_dodge(0.8))+
+    theme_few()+
+    scale_fill_manual(values = c("#BA0C2F","#00629B"), name = "Diagnosis")+
+  labs(x = NULL,y = "sd(Basin size)")+
+  scale_x_discrete(labels=c("alpha" = expression(alpha), "beta" = expression(beta),
+                              "delta" = expression(delta), "full" = "f", 
+                            "gamma" = expression(gamma),
+                            "theta" = expression(theta)))+
+  coord_cartesian(ylim = c(9.4,13.85))+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=18),
+        strip.text.x = element_text(size=18),
+        legend.title = element_text(size=16),
+        legend.text = element_text(size=16),
+        legend.position = "bottom")
+basin_sd
+
+report = stats  %>% 
+  as_tibble() %>%
+  mutate(report = paste0("$(F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3),")$"))
+```
+
+## Duration
+```{r}
+hist(sqrt(df$duration))
+hist(df$duration)
+
+df$duration = sqrt(df$duration)
+m1 = lm(duration ~ diagnosis*band*condition, df)
+qqnorm(m1$residuals)
+
+df %>% 
+  anova_test(sqrt(duration) ~ diagnosis*band*condition, wid = ID) %>% 
+  as_tibble() %>%
+  mutate(report = paste0("$(F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3),")$"))
+
+#band:condition
+df %>% group_by(band) %>% anova_test(duration ~ condition) %>% as_tibble() %>%
+  mutate(report = paste0("$(F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3),")$"))
+ggbarplot(df, "band", "duration", fill = "condition",
+          add="mean_se", add.params = list(width=0.35),
+          position = position_dodge(0.8))+
+    theme_few()+
+    scale_fill_manual(values = c("#BA0C2F","#00629B"), name = "Diagnosis")+
+  labs(x = NULL,y = "Time in Global Minimum")+
+  scale_x_discrete(labels=c("alpha" = expression(alpha), "beta" = expression(beta),
+                              "delta" = expression(delta), "full" = "f", 
+                            "gamma" = expression(gamma),
+                            "theta" = expression(theta)))
+
+#group:band
+stats = df %>% group_by(band) %>% anova_test(duration ~ diagnosis)
+
+#band:condition
+df %>% group_by(band) %>% tukey_hsd(duration ~ condition)
+
+duration = ggbarplot(df, "band", "duration", fill = "diagnosis", facet.by = "condition",
+          add="mean_se", add.params = list(width=0.35),
+          position = position_dodge(0.8))+
+    theme_few()+
+    scale_fill_manual(values = c("#BA0C2F","#00629B"), name = "Diagnosis")+
+  labs(x = NULL,y = "Time in GM")+
+  scale_x_discrete(labels=c("alpha" = expression(alpha), "beta" = expression(beta),
+                              "delta" = expression(delta), "full" = "f", 
+                            "gamma" = expression(gamma),
+                            "theta" = expression(theta)))+
+  coord_cartesian(ylim = c(3.25,4.63))+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=18),
+        strip.text.x = element_text(size=18),
+        legend.title = element_text(size=16),
+        legend.text = element_text(size=16),
+        legend.position = "bottom")
+duration
+
+report = stats  %>% 
+  as_tibble() %>%
+  mutate(report = paste0("$(F(", DFn, ",", DFd,")=",round(`F`,3),",p=",round(p,3),")$"))
+```
+
+Put the four plots together into a large figure (as in Figure 5)
+```{r}
+library(patchwork)
+final_plot = minima + E_diff+ basin_sd + duration + 
+  plot_layout(guides = 'collect') + plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size=24),
+        legend.position = "bottom",
+        axis.text = element_text(size=22),
+        axis.title = element_text(size=20))
+
+ggsave("final_results/linear_differences.pdf", final_plot, width = 12, height = 7, dpi = 300)
+ggsave("final_results/Figure5.pdf", final_plot, width = 12, height = 7, dpi = 300)
+```
